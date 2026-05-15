@@ -93,6 +93,9 @@ def _ce_to_game(json_response : dict) -> CEAPIGame :
                 last_updated = _timestamp_to_datetime(objreq['updatedAt'])
 
     # now that we have all objectives, we can make the object...
+    if json_response['genre'] is None:
+        print(f"null genre found for ce_id: {json_response['id']}")
+        return None
     ce_game = CEAPIGame(
         ce_id=json_response['id'],
         game_name=json_response['name'],
