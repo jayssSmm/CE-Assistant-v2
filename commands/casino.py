@@ -29,6 +29,7 @@ def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.G
                            "Set this to false if you'd like to be able to roll any game, regardless of SH hours.")
     async def solo_roll_command(interaction : discord.Interaction, event_name : hm.SOLO_ROLL_EVENT_NAMES, 
                                 price_restriction : bool = True, hours_restriction : bool = True) :
+        return await interaction.response.send_message("Under construction.")
         await solo_roll(interaction, event_name, price_restriction, hours_restriction)
         pass
 
@@ -38,6 +39,7 @@ def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.G
     @app_commands.describe(partner="The partner you'd like to roll with.")
     async def coop_roll_command(interaction : discord.Interaction, event_name : hm.COOP_ROLL_EVENT_NAMES, 
                                 partner : discord.Member) :
+        return await interaction.response.send_message("Under construction.")
         await coop_roll(interaction, event_name, partner)
         pass
 
