@@ -125,12 +125,26 @@ async def get_user(ce_id: str) -> CEUser:
         return _ce_to_user(user)
 
 async def get_api_games() -> list[str]:
+    PULL_LIMIT = 50
+    TRY_LIMIT = 4
     session = await http_session.get_session()
+    last_error: Exception | None = None
 
-    async with session.get(f'https://cedb.me/api/games') as response:
-        games = await response.json()
+    for attempt in range(TRY_LIMIT):
+        try:
+            async with session.get('https://cedb.me/api/games') as response:
+                games = await response.json()
+                return [g['id'] for g in games]
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 == TRY_LIMIT:
+                raise FailedScrapeException(f'Failed to fetch api/games after {TRY_LIMIT} attempts.') from exc
+            await asyncio.sleep(1.5 * (attempt + 1))
 
-        return [g['id'] for g in games]
+    if last_error is not None:
+        raise FailedScrapeException('Failed to fetch api/games.') from last_error
+
+    return []
     
 async def get_objective_ids() -> list[str]:
     # DELETE THIS IF THE ENDPOINT EVER GETS MADE!
@@ -142,6 +156,18 @@ async def get_objective_ids() -> list[str]:
         objectives = await response.json()
 
         return [o['id'] for o in objectives]
+    
+async def post_users_query(ids: list[str]) -> list[CEAPIUser]:
+    raise NotImplementedError
+    if len(ids) > 100:
+        print(f"post_users_query() called with {len(ids)=}")
+        return []
+    
+    session = await http_session.get_session()
+    async with session.post('https://cedb.me/api/users/query', data=ids) as response:
+        users = await response.json()
+
+        return [_ce_to_user(u) for u in users]
 
 async def get_api_games_full(return_json = False) -> list[CEAPIGame] :
     """Returns an array of :class:`CEAPIGame`'s grabbed from https://cedb.me/api/games/full"""
@@ -326,6 +352,7 @@ async def get_api_users_all(database_user : list[CEUser] | list[str] = None) -> 
 
 def _ce_to_user(json_response : dict) -> CEUser :
     # Go through all of their games and make CEUserGame's out of them.
+    if json_response == {}: return None
     user_games : list[CEUserGame] = []
     for game in json_response['userGames'] :
         user_games.append(

@@ -664,7 +664,8 @@ async def single_user_update_v2(user : CEUser, site_data : CEUser, old_database_
     
     # check pendings
     for i, roll in enumerate(user.rolls[:]) :
-        if roll.status == "pending" and roll.due_time <= hm.get_datetime('now') :
+        due_dt = roll._normalize_datetime(roll.due_time) if hasattr(roll, '_normalize_datetime') else roll.due_time
+        if roll.status == "pending" and due_dt is not None and due_dt <= hm.get_datetime('now') :
             user.remove_pending(roll.roll_name)
 
     # check rolls

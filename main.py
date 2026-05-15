@@ -13,7 +13,8 @@ from typing import Literal
 from Classes.CE_Game import CEGame
 from Classes.CE_Objective import CEObjective
 from Classes.OtherClasses import CEInput
-from Modules.WebInteractor import master_loop
+#from Modules.WebInteractor import master_loop
+from web_scraper.scraper import process_loop
 from Modules import SupabaseReader
 import Modules.hm as hm
 from Modules import http_session
@@ -802,9 +803,9 @@ async def check_inputs(interaction : discord.Interaction, game : str, simple : b
 
 @tasks.loop(minutes=1)
 async def monitor_loop():
-    if not master_loop.is_running():
+    if not process_loop.is_running():
         logging.warning("Main task loop is not running. Restarting...")
-        await master_loop.start(client, guild_id)
+        await process_loop.start(client)
 
 
 
@@ -833,8 +834,8 @@ async def on_ready() :
     
     # master loop
     if hm.IN_CE :
-        if not master_loop.is_running():
-            await master_loop.start(client, guild_id)
+        if not process_loop.is_running():
+            await process_loop.start()
         if not monitor_loop.is_running():
             await monitor_loop.start()
 

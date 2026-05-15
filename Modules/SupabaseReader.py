@@ -1,8 +1,11 @@
 import asyncio
 import datetime
 import json
+import time
 from typing import Literal
 import uuid
+
+from postgrest import APIError
 from Modules import CEAPIReader
 import Modules.hm as hm
 from supabase import create_client, Client
@@ -23,6 +26,49 @@ with open('secret_info.json') as f:
     SUPABASE_KEY = x['supabase_key_secret']
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def _iso_or_none(value):
+    """Return ISO string for datetime-like values, return the original string if already a string, or None for falsy/unparseable values."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        # ensure not the literal 'None'
+        return None if value == 'None' else value
+    if hasattr(value, 'isoformat'):
+        try:
+            return value.isoformat()
+        except Exception:
+            return None
+    return None
+
+
+def _fetch_in_chunks(table_name: str, column: str, values: list, chunk_size: int = 100) -> list[dict]:
+    """Fetch rows using .in_() in chunks to avoid oversized requests/Bad Request errors.
+
+    Supabase/PostgREST can reject very long `in()` queries (URL length or server limits).
+    This helper splits `values` into batches and aggregates results.
+    """
+    if not values:
+        return []
+    out: list[dict] = []
+    for i in range(0, len(values), chunk_size):
+        chunk = values[i:i+chunk_size]
+        resp = supabase.table(table_name).select().in_(column, chunk).execute()
+        # `.data` can be None on some errors, guard it
+        out.extend(resp.data or [])
+    return out
+
+def _delete_in_chunks(table_name: str, column: str, values: list, chunk_size: int = 100) -> int:
+    """Delete rows using .in_() in chunks and return the number of requested ids."""
+    if not values:
+        return 0
+    deleted = 0
+    for i in range(0, len(values), chunk_size):
+        chunk = values[i:i+chunk_size]
+        supabase.table(table_name).delete().in_(column, chunk).execute()
+        deleted += len(chunk)
+    return deleted
 
 # == GETTERS ==
 
@@ -48,6 +94,11 @@ def get_game(ce_id: str) -> CEGame | None:
 
     requirements_json = supabase.table("objectiveRequirements").select().in_("objective_ce_id", objective_ids).execute().data
 
+    if objective_ids:
+        requirements_json = supabase.table("objectiveRequirements").select().in_("objective_ce_id", objective_ids).execute().data
+    else:
+        requirements_json = []
+
     return __supabase_to_game(games_json[0], objectives_json, requirements_json)
 
 # GET USER
@@ -64,12 +115,23 @@ def get_user(ce_id: str, use_discord_id: bool = False) -> CEUser | None:
     userGames_json = supabase.table('userGames').select().eq('user_ce_id', ce_id).execute().data
     userObjectives_json = supabase.table('userObjectives').select().eq('user_ce_id', ce_id).execute().data
     userobjectives_list = [o['objective_ce_id'] for o in userObjectives_json]
-    objectives_json = supabase.table('objectives').select().in_('ce_id', userobjectives_list).execute().data
+
+    # Use chunked fetch to avoid very large `in_` queries which can cause Bad Request
+    objectives_json = _fetch_in_chunks('objectives', 'ce_id', userobjectives_list, chunk_size=100)
 
     rolls_json = supabase.table('rolls').select().or_(f"user1_ce_id.eq.{ce_id},user2_ce_id.eq.{ce_id}").execute().data
     roll_ids = [item['id'] for item in rolls_json]
+    # ensure objectives_json is populated (already fetched above using chunked helper)
+    if not objectives_json:
+        objectives_json = []
+
+    rolls_json = supabase.table('rolls').select().or_(f"user1_ce_id.eq.{ce_id},user2_ce_id.eq.{ce_id}").execute().data
+    roll_ids = [item['id'] for item in rolls_json]
+    if roll_ids:
+        userRollGames_json = supabase.table('rollGames').select().in_("roll_id", roll_ids).order("index").execute().data
+    else:
+        userRollGames_json = []
     
-    userRollGames_json = supabase.table('rollGames').select().in_("roll_id", roll_ids).order("index").execute().data
 
     return __supabase_to_user(user_json, userGames_json, userObjectives_json, rolls_json, userRollGames_json, objectives_json)
 
@@ -114,6 +176,81 @@ def get_database_user() -> list[CEUser]:
     
     return _users
 
+
+def get_users_bulk(ce_ids: list[str]) -> list[CEUser]:
+    """Fetch many users and their related data in bulk using chunked requests.
+
+    Returns a list of `CEUser` objects corresponding to the provided `ce_ids`.
+    Uses `_fetch_in_chunks` to avoid oversized `.in_()` requests.
+    """
+    if not ce_ids:
+        return []
+
+    # Fetch users
+    users_json = _fetch_in_chunks('users', 'ce_id', ce_ids, chunk_size=100)
+    if not users_json:
+        return []
+
+    user_ce_ids = [u['ce_id'] for u in users_json]
+
+    # Fetch userGames and userObjectives for these users
+    userGames_json = _fetch_in_chunks('userGames', 'user_ce_id', user_ce_ids, chunk_size=200)
+    userObjectives_json = _fetch_in_chunks('userObjectives', 'user_ce_id', user_ce_ids, chunk_size=200)
+
+    # Fetch objectives referenced by the userObjectives
+    objective_ids = list({o['objective_ce_id'] for o in userObjectives_json})
+    objectives_json = _fetch_in_chunks('objectives', 'ce_id', objective_ids, chunk_size=200) if objective_ids else []
+
+    # Fetch rolls where either user1 or user2 is in our set
+    rolls_user1 = _fetch_in_chunks('rolls', 'user1_ce_id', user_ce_ids, chunk_size=200)
+    rolls_user2 = _fetch_in_chunks('rolls', 'user2_ce_id', user_ce_ids, chunk_size=200)
+    # Merge rolls and deduplicate by id
+    rolls_map: dict[str, dict] = {}
+    for r in (rolls_user1 or []) + (rolls_user2 or []):
+        rolls_map[r['id']] = r
+    rolls = list(rolls_map.values())
+
+    # Fetch rollGames for all roll ids
+    roll_ids = [r['id'] for r in rolls]
+    rollGames_json = _fetch_in_chunks('rollGames', 'roll_id', roll_ids, chunk_size=200) if roll_ids else []
+
+    # Organize by user for assembly
+    ugames_by_user: dict[str, list[dict]] = {}
+    for ug in userGames_json:
+        ugames_by_user.setdefault(ug['user_ce_id'], []).append(ug)
+
+    uobjs_by_user: dict[str, list[dict]] = {}
+    for uo in userObjectives_json:
+        uobjs_by_user.setdefault(uo['user_ce_id'], []).append(uo)
+
+    rolls_by_user: dict[str, list[dict]] = {}
+    for r in rolls:
+        rolls_by_user.setdefault(r.get('user1_ce_id'), []).append(r)
+        rolls_by_user.setdefault(r.get('user2_ce_id'), []).append(r)
+
+    # Build users list preserving provided order when possible
+    out_users: list[CEUser] = []
+    users_index = {u['ce_id']: u for u in users_json}
+    for ce_id in ce_ids:
+        user_json = users_index.get(ce_id)
+        if not user_json:
+            continue
+
+        ugames = ugames_by_user.get(ce_id, [])
+        uobjectives = uobjs_by_user.get(ce_id, [])
+        user_rolls = [r for r in rolls_by_user.get(ce_id, []) if r is not None]
+
+        # rollGames relevant for this user's rolls
+        user_roll_ids = [r['id'] for r in user_rolls]
+        user_rollgames = [rg for rg in rollGames_json if rg['roll_id'] in user_roll_ids]
+
+        # objectives subset already fetched above
+        user_objectives_list = objectives_json
+
+        out_users.append(__supabase_to_user(user_json, ugames, uobjectives, user_rolls, user_rollgames, user_objectives_list))
+
+    return out_users
+
 def get_roll(roll_id: str) -> CERoll:
     roll_json = supabase.table('rolls').select().eq('id', roll_id).execute().data
     if len(roll_json) == 0: return None
@@ -153,26 +290,256 @@ def get_curator_count() -> int:
 def get_last_loop() -> datetime.datetime:
     data = supabase.table('loopruns').select('ran_at').order('ran_at', desc=True).limit(1).execute().data
 
-    return datetime.datetime.fromisoformat(data['ran_at'])
+    return datetime.datetime.fromisoformat(data[0]['ran_at'])
 
 
 
 # === DUMPERS ===
 def dump_game(game: CEGame):
+    # Upsert game record
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     game_data = {
         'ce_id': game.ce_id,
         'name': game.game_name,
         'platform': game.platform,
         'platform_id': game.platform_id,
         'category_primary': game.category,
-        'image_header': game.banner,
+        'image_header': game._banner,
         'image_icon': '',  # TODO: populate if available
         'updated_at_CE': game.last_updated.isoformat() if isinstance(game.last_updated, datetime.datetime) else game.last_updated
     }
     supabase.table('games').upsert(game_data).execute()
-    
-    for objective in game.objectives:
-        dump_objective(objective)
+
+    # Prepare bulk upserts for objectives and requirements to reduce HTTP calls
+    objectives_payload = []
+    achievement_reqs_payload = []
+    custom_reqs_payload = []
+    objective_ids = []
+
+    for objective in game.all_objectives:
+        objective_ids.append(objective.ce_id)
+        objectives_payload.append({
+            'ce_id': objective.ce_id,
+            'game_ce_id': objective.game_ce_id,
+            'type': objective.type,
+            'name': objective.name,
+            'description': objective.description,
+            'points': objective.point_value,
+            'points_partial': objective.partial_points,
+            'updated_at_CE': now_iso
+        })
+
+        for achievement_id in (objective.achievement_ce_ids or []):
+            achievement_reqs_payload.append({
+                'objective_ce_id': objective.ce_id,
+                'requirement_type': 'achievement',
+                'data': achievement_id,
+                'updated_at_CE': now_iso
+            })
+
+        if objective.requirements:
+            custom_reqs_payload.append({
+                'objective_ce_id': objective.ce_id,
+                'requirement_type': 'custom',
+                'data': objective.requirements,
+                'updated_at_CE': now_iso
+            })
+
+    # Delete existing custom requirements for all objectives in this game in one call
+    if objective_ids:
+        supabase.table('objectiveRequirements').delete().in_('objective_ce_id', objective_ids).eq('requirement_type', 'custom').execute()
+
+    # Bulk upsert objectives
+    if objectives_payload:
+        supabase.table('objectives').upsert(objectives_payload).execute()
+
+    # Bulk upsert achievement requirements
+    if achievement_reqs_payload:
+        supabase.table('objectiveRequirements').upsert(achievement_reqs_payload).execute()
+
+    # Bulk upsert custom requirements
+    if custom_reqs_payload:
+        supabase.table('objectiveRequirements').upsert(custom_reqs_payload).execute()
+
+def bulk_dump_games(games: list[CEGame], batch_size: int = 50, pause_seconds: float = 0.1):
+    """Bulk dump many games at once in batches to reduce HTTP calls and avoid connection termination.
+
+    - groups games into batches of `batch_size`
+    - for each batch: collect games, objectives, achievement requirements, and custom requirements
+    - delete existing custom requirements for all objectives in the batch in a single call
+    - bulk upsert games, objectives, achievement requirements, and custom requirements
+    - optional `pause_seconds` between batches to avoid overwhelming the server
+    """
+    if not games:
+        return
+
+    # process in batches
+    for i in range(0, len(games), batch_size):
+        batch = games[i:i+batch_size]
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        games_payload = []
+        objectives_payload = []
+        achievement_reqs_payload = []
+        custom_reqs_payload = []
+        objective_ids = []
+
+        for game in batch:
+            games_payload.append({
+                'ce_id': game.ce_id,
+                'name': game.game_name,
+                'platform': game.platform,
+                'platform_id': game.platform_id,
+                'category_primary': game.category,
+                'image_header': game._banner,
+                'image_icon': '',
+                'updated_at_CE': game.last_updated.isoformat() if isinstance(game.last_updated, datetime.datetime) else game.last_updated
+            })
+
+            for objective in game.all_objectives:
+                objective_ids.append(objective.ce_id)
+                objectives_payload.append({
+                    'ce_id': objective.ce_id,
+                    'game_ce_id': objective.game_ce_id,
+                    'type': objective.type,
+                    'name': objective.name,
+                    'description': objective.description,
+                    'points': objective.point_value,
+                    'points_partial': objective.partial_points,
+                    'updated_at_CE': now_iso
+                })
+
+                for achievement_id in (objective.achievement_ce_ids or []):
+                    achievement_reqs_payload.append({
+                        'objective_ce_id': objective.ce_id,
+                        'requirement_type': 'achievement',
+                        'data': achievement_id,
+                        'updated_at_CE': now_iso
+                    })
+
+                if objective.requirements:
+                    custom_reqs_payload.append({
+                        'objective_ce_id': objective.ce_id,
+                        'requirement_type': 'custom',
+                        'data': objective.requirements,
+                        'updated_at_CE': now_iso
+                    })
+
+        # Delete existing custom requirements for all objectives in this batch
+        if objective_ids:
+            supabase.table('objectiveRequirements').delete().in_('objective_ce_id', objective_ids).eq('requirement_type', 'custom').execute()
+
+        # Bulk upsert games
+        if games_payload:
+            supabase.table('games').upsert(games_payload).execute()
+
+        # Bulk upsert objectives
+        if objectives_payload:
+            supabase.table('objectives').upsert(objectives_payload).execute()
+
+        # Bulk upsert achievement requirements
+        if achievement_reqs_payload:
+            supabase.table('objectiveRequirements').upsert(achievement_reqs_payload).execute()
+
+        # Bulk upsert custom requirements
+        if custom_reqs_payload:
+            supabase.table('objectiveRequirements').upsert(custom_reqs_payload).execute()
+
+        # small pause to avoid overloading the server
+        if pause_seconds and (i + batch_size) < len(games):
+            time.sleep(pause_seconds)
+
+def bulk_dump_users(users: list[CEUser], batch_size: int = 50, pause_seconds: float = 0.1):
+    """Bulk dump many users at once in batches to reduce HTTP calls and avoid connection termination.
+
+    - groups users into batches of `batch_size`
+    - for each batch: collect users, userGames, and userObjectives
+    - bulk upsert users, userGames, and userObjectives
+    - optional `pause_seconds` between batches to avoid overwhelming the server
+    - rolls are dumped individually (per user) after batch
+    """
+    if not users:
+        return
+
+    # process in batches
+    for i in range(0, len(users), batch_size):
+        batch = users[i:i+batch_size]
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        users_payload = []
+        user_games_payload = []
+        user_objectives_payload = []
+
+        for user in batch:
+            users_payload.append({
+                'ce_id': user.ce_id,
+                'discord_id': user.discord_id,
+                'display_name': user.display_name,
+                'image_avatar': user.avatar,
+                'steam_id': user._steam_id,
+                'created_at_CE': now_iso,
+                'updated_at_CE': user.last_updated if isinstance(user.last_updated, str) else (user.last_updated.isoformat() if hasattr(user.last_updated, 'isoformat') else now_iso)
+            })
+
+            for game in user.owned_games:
+                user_games_payload.append({
+                    'user_ce_id': user.ce_id,
+                    'game_ce_id': game.ce_id,
+                    'updated_at_CE': now_iso
+                })
+
+                for objective in game.user_objectives:
+                    user_objectives_payload.append({
+                        'user_ce_id': user.ce_id,
+                        'objective_ce_id': objective.ce_id,
+                        'user_points': objective.user_points,
+                        'updated_at_CE': now_iso
+                    })
+
+        # Bulk upsert users
+        if users_payload:
+            supabase.table('users').upsert(users_payload).execute()
+
+        # Bulk upsert userGames
+        if user_games_payload:
+            game_collision = True
+            while game_collision:
+                game_collision = False
+                try:
+                    supabase.table('userGames').upsert(user_games_payload).execute()
+                except APIError as e:
+                    if 'violates foreign key constraint' not in e.message:
+                        raise e
+                    game_id = e.details.replace('Key (game_ce_id)=(', '').replace(') is not present in table "games".', '')
+                    user_games_payload = [row for row in user_games_payload if row['game_ce_id'] != game_id]
+                    game_collision = True
+                    print(f'found usergame for game={game_id}, user={user.ce_id}')
+                
+
+
+        # Bulk upsert userObjectives
+        if user_objectives_payload:
+            objective_collision = True
+            while objective_collision:
+                objective_collision = False
+                try:
+                    supabase.table('userObjectives').upsert(user_objectives_payload).execute()
+                except APIError as e:
+                    if 'violates foreign key constraint' not in e.message:
+                        raise e
+                    objective_id = e.details.replace('Key (objective_ce_id)=(', '').replace(') is not present in table "objectives".', '')
+                    user_objectives_payload = [row for row in user_objectives_payload if row['objective_ce_id'] != objective_id]
+                    objective_collision = True
+                    print(f'found userobj for obj={objective_id}, user={user.ce_id}')
+
+        # Dump rolls individually per user (keep serial for now to avoid overwhelming connection)
+        for user in batch:
+            for roll in user.rolls:
+                dump_roll(roll)
+
+        # small pause to avoid overloading the server
+        if pause_seconds and (i + batch_size) < len(users):
+            time.sleep(pause_seconds)
 
 def dump_user(user: CEUser):
     user_data = {
@@ -180,7 +547,7 @@ def dump_user(user: CEUser):
         'discord_id': user.discord_id,
         'display_name': user.display_name,
         'image_avatar': user.avatar,
-        'steam_id': user.steam_id,
+        'steam_id': user._steam_id,
         'created_at_CE': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'updated_at_CE': user.last_updated if isinstance(user.last_updated, str) else (user.last_updated.isoformat() if hasattr(user.last_updated, 'isoformat') else datetime.datetime.now(datetime.timezone.utc).isoformat())
     }
@@ -203,8 +570,75 @@ def dump_user(user: CEUser):
             }
             supabase.table('userObjectives').upsert(obj_data).execute()
     
-    for roll in user.rolls:
-        dump_roll(roll)
+    # for roll in user.rolls:
+    #     dump_roll(roll)
+
+def __dump_JUST_user(d: dict):
+    "Just used for discord id updating. No games/objectives propogated."
+    supabase.table('users').upsert(d).execute()
+
+
+
+
+
+def bulk_dump_rolls(rolls: list[CERoll], batch_size: int = 100, pause_seconds: float = 0.05):
+    """Bulk dump many rolls and rollGames in batches to reduce HTTP calls.
+
+    - deletes existing rollGames and rolls for batch roll ids before inserting
+    - bulk inserts rolls, then rollGames
+    - small pause between batches to avoid connection issues
+    """
+    if not rolls:
+        return
+
+    for i in range(0, len(rolls), batch_size):
+        batch = rolls[i:i+batch_size]
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        roll_ids = [r._id for r in batch]
+        rolls_payload = []
+        rollgames_payload = []
+
+        for r in batch:
+            rolls_payload.append({
+                'id': r._id,
+                'event_name': r.roll_name,
+                'user1_ce_id': r.user_ce_id,
+                'user2_ce_id': r.partner_ce_id,
+                'time_created': _iso_or_none(r.init_time),
+                'time_due': _iso_or_none(r.due_time),
+                'time_completed': _iso_or_none(r.completed_time),
+                'is_lucky': False,
+                'chosen_tier': None,
+                'status': r.status,
+                'rerolls_remaining': r.rerolls,
+                'rerolls_used': 0,
+                'winner': None,
+                'updated_at_CE': now_iso
+            })
+
+            for idx, game_id in enumerate(r.games):
+                rollgames_payload.append({
+                    'roll_id': r._id,
+                    'game_id': game_id,
+                    'index': idx,
+                    'rolled_at': now_iso
+                })
+
+        # Delete existing rollGames and rolls for this batch
+        if roll_ids:
+            supabase.table('rollGames').delete().in_('roll_id', roll_ids).execute()
+            supabase.table('rolls').delete().in_('id', roll_ids).execute()
+
+        # Bulk insert rolls and rollGames
+        if rolls_payload:
+            supabase.table('rolls').insert(rolls_payload).execute()
+
+        if rollgames_payload:
+            supabase.table('rollGames').insert(rollgames_payload).execute()
+
+        if pause_seconds and (i + batch_size) < len(rolls):
+            time.sleep(pause_seconds)
 
 def dump_roll(roll: CERoll):
     roll_data = {
@@ -212,9 +646,9 @@ def dump_roll(roll: CERoll):
         'event_name': roll.roll_name,
         'user1_ce_id': roll.user_ce_id,
         'user2_ce_id': roll.partner_ce_id,
-        'time_created': roll.init_time if isinstance(roll.init_time, str) else roll.init_time.isoformat() if hasattr(roll.init_time, 'isoformat') else str(roll.init_time),
-        'time_due': roll.due_time if isinstance(roll.due_time, str) else roll.due_time.isoformat() if hasattr(roll.due_time, 'isoformat') else str(roll.due_time),
-        'time_completed': roll.completed_time if isinstance(roll.completed_time, str) else (roll.completed_time.isoformat() if (roll.completed_time and hasattr(roll.completed_time, 'isoformat')) else None),
+        'time_created': _iso_or_none(roll.init_time),
+        'time_due': _iso_or_none(roll.due_time),
+        'time_completed': _iso_or_none(roll.completed_time),
         'is_lucky': False,  # TODO: determine from roll data
         'chosen_tier': None,  # TODO: populate if available
         'status': roll.status,
@@ -249,8 +683,8 @@ def dump_database_tier(database_tier: list[dict]):
     for tier_record in database_tier:
         supabase.table('tier').upsert(tier_record).execute()
 
-def dump_loop():
-    supabase.table('loopruns').insert({'ran_at', datetime.datetime.now(datetime.timezone.utc).isoformat()})
+def dump_loop(dt: datetime.datetime):
+    supabase.table('loopruns').insert({'ran_at': dt.isoformat()}).execute()
     return 
 
 # === SUPABASE DELETERS ===
@@ -285,6 +719,39 @@ def delete_roll(roll_id: str):
     # Delete roll
     supabase.table('rolls').delete().eq('id', roll_id).execute()
 
+
+# === MAINTENANCE ===
+def clean_db():
+    """Cleans out the database. Any user games and user objectives with no corresponding
+    real game or objective get deleted."""
+    games = supabase.table('games').select('ce_id').execute().data or []
+    objectives = supabase.table('objectives').select('ce_id').execute().data or []
+
+    game_ids = {game['ce_id'] for game in games}
+    objective_ids = {objective['ce_id'] for objective in objectives}
+
+    user_games = supabase.table('userGames').select('user_ce_id,game_ce_id').execute().data or []
+    orphan_user_game_ids = [
+        row['game_ce_id']
+        for row in user_games
+        if row.get('game_ce_id') not in game_ids
+    ]
+
+    user_objectives = supabase.table('userObjectives').select('user_ce_id,objective_ce_id').execute().data or []
+    orphan_user_objective_ids = [
+        row['objective_ce_id']
+        for row in user_objectives
+        if row.get('objective_ce_id') not in objective_ids
+    ]
+
+    deleted_user_games = _delete_in_chunks('userGames', 'game_ce_id', orphan_user_game_ids)
+    deleted_user_objectives = _delete_in_chunks('userObjectives', 'objective_ce_id', orphan_user_objective_ids)
+
+    print(
+        f"clean_db removed {deleted_user_games} orphan userGames and {deleted_user_objectives} orphan userObjectives"
+    )
+
+
 # === SUPABASE CONVERTERS ===
 
 def __supabase_to_game(game: dict, obj = list[dict], reqs = list[dict]) -> CEGame: 
@@ -297,15 +764,23 @@ def __supabase_to_game(game: dict, obj = list[dict], reqs = list[dict]) -> CEGam
         platform=game['platform'],
         platform_id=game['platform_id'],
         category=game['category_primary'],
-        last_updated=updated_dt,
+        last_updated=game['updated_at_CE'],
         banner=game['image_header'],
         objectives=objectives
     )
 
 def __supabase_to_objective(obj: dict, reqs: list[dict]) -> CEObjective:
-    requirement = [req['data'] for req in reqs if req['requirement_type'] == 'custom']
-    if len(requirement) > 1: raise Exception("More than one custom requirement found")
-    requirement = None if len(requirement) == 0 else requirement[0]
+    custom_reqs = [req for req in reqs if req['requirement_type'] == 'custom']
+    
+    if len(custom_reqs) > 1: 
+        # Multiple custom requirements - select the one with the most recent updated_at_CE
+        sorted_reqs = sorted(custom_reqs, key=lambda r: r.get('updated_at_CE', ''), reverse=True)
+        requirement = sorted_reqs[0]['data']
+    elif len(custom_reqs) == 1:
+        requirement = custom_reqs[0]['data']
+    else:
+        requirement = None
+    
     return CEObjective(
         ce_id=obj['ce_id'],
         objective_type=obj['type'],
@@ -377,9 +852,17 @@ def __supabase_to_user_objective(objective: dict, game_ce_id: str) -> CEUserObje
 
 
 def __supabase_to_objective(obj: dict, reqs: list[dict]) -> CEObjective:
-    requirement = [req['data'] for req in reqs if req['requirement_type'] == 'custom']
-    if len(requirement) > 1: raise Exception("More than one custom requirement found")
-    requirement = None if len(requirement) == 0 else requirement[0]
+    custom_reqs = [req for req in reqs if req['requirement_type'] == 'custom']
+    
+    if len(custom_reqs) > 1: 
+        # Multiple custom requirements - select the one with the most recent updated_at_CE
+        sorted_reqs = sorted(custom_reqs, key=lambda r: r.get('updated_at_CE', ''), reverse=True)
+        requirement = sorted_reqs[0]['data']
+    elif len(custom_reqs) == 1:
+        requirement = custom_reqs[0]['data']
+    else:
+        requirement = None
+    
     return CEObjective(
         ce_id=obj['ce_id'],
         objective_type=obj['type'],
@@ -407,14 +890,17 @@ def __supabase_to_roll(roll: dict, rollGames: list[dict]) -> CERoll:
     )
 
 def dump_objective(objective: CEObjective):
+    # Delete all previous custom requirements for this objective to prevent duplicates
+    supabase.table('objectiveRequirements').delete().eq('objective_ce_id', objective.ce_id).eq('requirement_type', 'custom').execute()
+    
     obj_data = {
         'ce_id': objective.ce_id,
         'game_ce_id': objective.game_ce_id,
-        'type': objective.objective_type,
+        'type': objective.type,
         'name': objective.name,
         'description': objective.description,
         'points': objective.point_value,
-        'points_partial': objective.point_value_partial,
+        'points_partial': objective.partial_points,
         'updated_at_CE': datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
     supabase.table('objectives').upsert(obj_data).execute()

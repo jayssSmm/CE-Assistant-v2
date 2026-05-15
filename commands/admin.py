@@ -10,6 +10,8 @@ from Modules import CEAPIReader, Reformatter, hm, SupabaseReader
 import requests
 import json
 
+from web_scraper.scraper import process_loop
+
 
 def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.Guild) :
     global client, guild
@@ -151,7 +153,7 @@ async def loop(interaction : discord.Interaction) :
     await private_log_channel.send(f":white_large_square: dev command run by <@{interaction.user.id}>: /initiate-loop",
                              allowed_mentions=discord.AllowedMentions.none())
 
-    await master_loop(client, guild.id)
+    await process_loop(client)
 
     return await interaction.followup.send('loop complete.')
 

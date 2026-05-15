@@ -20,7 +20,7 @@ class CEUserGame():
     def get_user_points(self) :
         """Returns the total number of points this user has in this game."""
         total_points = 0
-        for objective in self.get_user_primary_objectives() :
+        for objective in self.user_objectives :
             total_points += objective.user_points
         return total_points
     

@@ -1,3 +1,4 @@
+import datetime
 from typing import Literal, get_args
 
 import Modules.hm as hm
@@ -120,9 +121,9 @@ class CERoll:
                  games : list[str],
                  status : ROLL_STATUS = None,
                  partner_ce_id : str = None,
-                 init_time : int = None,
-                 due_time = None,
-                 completed_time = None,
+                 init_time : datetime.datetime = None,
+                 due_time: datetime.datetime = None,
+                 completed_time: datetime.datetime = None,
                  rerolls = None,
                  is_current : bool = False,
                  tier_num : int = None,
@@ -131,16 +132,16 @@ class CERoll:
         self._user_ce_id : str = user_ce_id
         self._games : list[str] = games
         self._status = status
-        self._partner_ce_id : str = partner_ce_id,
+        self._partner_ce_id : str = partner_ce_id
         self._id = _id
 
         # if the roll isn't being created right now
-        # (and therefore is probably being read from MongoDB)
-        # don't reset all the variables
+        # (and therefore is probably being read from Supabase)
+        # normalize any string timestamps and don't reset variables
         if not is_current : 
-            self._init_time = init_time
-            self._due_time = due_time
-            self._completed_time = completed_time
+            self._init_time = self._normalize_datetime(init_time) if init_time is not None else None
+            self._due_time = self._normalize_datetime(due_time) if due_time is not None else None
+            self._completed_time = self._normalize_datetime(completed_time) if completed_time is not None else None
             self._rerolls = rerolls
             return
 
@@ -173,6 +174,24 @@ class CERoll:
             if self.roll_name == "Fourward Thinking" : self._rerolls = 0
         else :
             self._rerolls = rerolls
+
+    # ------- helper methods -------
+    
+    def _normalize_datetime(self, dt):
+        """Convert string or naive datetime to timezone-aware datetime."""
+        if dt is None:
+            return None
+        if isinstance(dt, str):
+            try:
+                dt = datetime.datetime.fromisoformat(dt)
+            except Exception:
+                try:
+                    dt = hm.cetimestamp_to_datetime(dt)
+                except Exception:
+                    return None
+        if isinstance(dt, datetime.datetime) and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
 
     # ------- properties -------
 
@@ -262,7 +281,9 @@ class CERoll:
     def increase_due_time(self, increase_in_seconds : int) -> None :
         """Moves the due date of this roll event up 
         by `increase_in_seconds` seconds."""
-        self._due_time += increase_in_seconds
+        dt = self._normalize_datetime(self._due_time)
+        if dt is not None:
+            self._due_time = dt + datetime.timedelta(seconds=increase_in_seconds)
 
     @due_time.setter
     def due_time(self, days : int) -> None :
@@ -329,8 +350,26 @@ class CERoll:
     
     def is_expired(self) -> bool :
         """Returns true if the roll has expired."""
-        if self.due_time == None : return False
-        return self.due_time < hm.get_datetime('now')
+        if self.due_time is None :
+            return False
+
+        dt = self.due_time
+        # normalize string timestamps to datetime
+        if isinstance(dt, str):
+            try:
+                dt = datetime.datetime.fromisoformat(dt)
+            except Exception:
+                try:
+                    dt = hm.cetimestamp_to_datetime(dt)
+                except Exception:
+                    print(f'FAILED EXPIRATION CHECK: {self.due_time=}')
+                    return False
+
+        # ensure timezone-aware for comparison
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+
+        return dt < hm.get_datetime('now')
 
     def is_completed(self) -> bool :
         "Return true if this roll has been completed."

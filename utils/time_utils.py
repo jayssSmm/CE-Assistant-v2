@@ -24,8 +24,22 @@ def months_to_days(num_months : int) -> int:
 def get_datetime(days = 0, minutes = None, months = None, old_datetime = None) -> datetime.datetime:
     """Returns a datetime object for `days` days (or `minutes` minutes, or `months` months) from the current time.
     \nAdditionally, `old_datetime` can be passed as a parameter to get `days` days (or `minutes` minutes, or `months` months) from that datetime."""
+    # normalize string old_datetime to datetime
+    if isinstance(old_datetime, str):
+        try:
+            old_datetime = datetime.datetime.fromisoformat(old_datetime)
+        except Exception:
+            try:
+                old_datetime = cetimestamp_to_datetime(old_datetime)
+            except Exception:
+                old_datetime = None
+    
     # -- old datetime passed --
     if(old_datetime != None) :
+        # ensure timezone-aware
+        if old_datetime.tzinfo is None:
+            old_datetime = old_datetime.replace(tzinfo=datetime.timezone.utc)
+        
         if (minutes != None) : return old_datetime + datetime.timedelta(minutes=minutes)
         elif (months != None) : return old_datetime + datetime.timedelta(days=months_to_days(months))
         else : return old_datetime + datetime.timedelta(days=days)
