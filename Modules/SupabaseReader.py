@@ -150,6 +150,49 @@ def get_database_name() -> list[CEGame]:
     
     return _games
 
+
+def get_games_bulk(ce_ids: list[str]) -> list[CEGame]:
+    """Fetch many games and their objectives/requirements in bulk using chunked requests.
+
+    Returns a list of `CEGame` objects in the same order as the provided `ce_ids` when possible.
+    Uses `_fetch_in_chunks` to avoid oversized `.in_()` requests.
+    """
+    if not ce_ids:
+        return []
+
+    games_json = _fetch_in_chunks('games', 'ce_id', ce_ids, chunk_size=100)
+    if not games_json:
+        return []
+
+    game_ce_ids = [game['ce_id'] for game in games_json]
+    objectives_json = _fetch_in_chunks('objectives', 'game_ce_id', game_ce_ids, chunk_size=200)
+    objective_ids = [objective['ce_id'] for objective in objectives_json]
+    requirements_json = _fetch_in_chunks('objectiveRequirements', 'objective_ce_id', objective_ids, chunk_size=200) if objective_ids else []
+
+    objectives_by_game: dict[str, list[dict]] = {}
+    for objective in objectives_json:
+        objectives_by_game.setdefault(objective['game_ce_id'], []).append(objective)
+
+    requirements_by_objective: dict[str, list[dict]] = {}
+    for requirement in requirements_json:
+        requirements_by_objective.setdefault(requirement['objective_ce_id'], []).append(requirement)
+
+    games_index = {game['ce_id']: game for game in games_json}
+    out_games: list[CEGame] = []
+    for ce_id in ce_ids:
+        game_json = games_index.get(ce_id)
+        if not game_json:
+            continue
+
+        game_objectives = objectives_by_game.get(ce_id, [])
+        game_requirements: list[dict] = []
+        for objective in game_objectives:
+            game_requirements.extend(requirements_by_objective.get(objective['ce_id'], []))
+
+        out_games.append(__supabase_to_game(game_json, game_objectives, game_requirements))
+
+    return out_games
+
 # DATABASE USER
 def get_database_user() -> list[CEUser]:
     response_user = supabase.table('users').select().execute().data

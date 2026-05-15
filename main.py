@@ -840,9 +840,9 @@ async def on_ready() :
             await monitor_loop.start()
 
 
-@client.event
-async def on_disconnect() :
-    await http_session.close_session()
+# @client.event
+# async def on_disconnect() :
+#     await http_session.close_session()
 
 
 client.run(discord_token)

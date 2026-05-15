@@ -146,7 +146,7 @@ async def process_loop(client: discord.Client = None):
     # fix this is mad inefficient
 
     # step 2a) generate name_old and name_new
-    database_name_old = SupabaseReader.get_database_name()
+    database_name_old = SupabaseReader.get_games_bulk(SupabaseReader.get_list('name'))
     database_name_new = database_name_old.copy()
 
     # propogate all removals
