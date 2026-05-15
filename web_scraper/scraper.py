@@ -223,7 +223,7 @@ async def process_loop(client: discord.Client = None):
             if SENDUPDATES: 
                 if channel is None:
                     print(update.location)
-                await channel.send(update.text)
+                await channel.send(update.text, allowed_mentions=discord.AllowedMentions.none())
             else: update.print(full=True)
             continue
         
