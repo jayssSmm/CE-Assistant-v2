@@ -835,7 +835,7 @@ async def on_ready() :
     # master loop
     if hm.IN_CE :
         if not process_loop.is_running():
-            await process_loop.start()
+            await process_loop.start(client)
         if not monitor_loop.is_running():
             await monitor_loop.start()
 
