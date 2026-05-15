@@ -631,7 +631,7 @@ def update_one_user(user: CEUser, site_data: CEAPIUser, database_name_old: list[
     # -- COMPLETION COUNT UPDATE -- 
     COMPLETION_INCREMENT = 25
     if (int(len(completed_games_original) / COMPLETION_INCREMENT) 
-        != int(len(completed_games_new) / COMPLETION_INCREMENT)):
+        < int(len(completed_games_new) / COMPLETION_INCREMENT)):
         if not user.on_mutelist():
             update = UpdateMessageForScraperProcess()
             update.location = "userlog"
