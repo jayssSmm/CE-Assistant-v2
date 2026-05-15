@@ -246,7 +246,7 @@ async def process_loop(client: discord.Client = None):
             await channel.send(embed=embed)
         else: update.print(full=True)
     
-    if DEBUG: print(f"process_loop() complete at {hm.get_datetime("now")}")
+    if DEBUG: print(f"process_loop() complete at {hm.get_datetime('now')}")
 
     if SAVEDATA: SupabaseReader.dump_loop(time_current)
     
