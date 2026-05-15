@@ -762,6 +762,11 @@ def delete_roll(roll_id: str):
     # Delete roll
     supabase.table('rolls').delete().eq('id', roll_id).execute()
 
+def delete_objectives_many(objs: list[str]):
+    "Delete all objectives given in `objs`."
+    supabase.table('objectives').delete().in_('ce_id', objs).execute()
+    supabase.table('objectiveRequirements').delete().in_('objective_ce_id', objs).execute()
+
 
 # === MAINTENANCE ===
 def clean_db():

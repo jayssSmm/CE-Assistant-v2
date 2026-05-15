@@ -11,6 +11,7 @@ import requests
 import json
 
 from web_scraper.scraper import process_loop
+from Modules import http_session
 
 
 def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.Guild) :
@@ -71,6 +72,11 @@ def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.G
     @tree.command(name='force-unlink', description="Unlink someone from the bot.", guild=guild)
     async def force_unlink_command(interaction: discord.Interaction, member: discord.Member):
         await force_unlink(interaction, member)
+
+        @tree.command(name='shutdown', description='Shut the bot down.', guild=guild)
+        @app_commands.default_permissions(administrator=True)
+        async def shutdown_command(interaction: discord.Interaction):
+            await shutdown(interaction)
     pass
 
 
@@ -156,6 +162,24 @@ async def loop(interaction : discord.Interaction) :
     await process_loop(client)
 
     return await interaction.followup.send('loop complete.')
+
+async def shutdown(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    private_log_channel = client.get_channel(hm.PRIVATE_LOG_ID)
+    if private_log_channel is not None:
+        await private_log_channel.send(
+            f":white_large_square: dev command run by <@{interaction.user.id}>: /shutdown",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    await interaction.followup.send('Shutting down the bot...', ephemeral=True)
+
+    if process_loop.is_running():
+        process_loop.stop()
+
+    await http_session.close_session()
+    await client.close()
 
 
 #             _____    _____      _   _    ____    _______   ______    _____ 

@@ -130,7 +130,7 @@ async def process_loop(client: discord.Client = None):
     SENDUPDATES = True
 
     # Step 1: Update Games
-    _updates, games_new, removed_games = await update_games()
+    _updates, games_new, removed_games, removed_objectives = await update_games()
     updates.extend(_updates)
 
     if DEBUG: 
@@ -182,30 +182,32 @@ async def process_loop(client: discord.Client = None):
 
     # Step 4: write all of our stuff
     if SAVEDATA:
-        print('saving data')
+        if DEBUG: print('saving data')
 
-        print(f"{len(games_new)=}")
+        if DEBUG: print(f"{len(games_new)=}")
         if DEBUG: print(f"BULK GAMES")
         SupabaseReader.bulk_dump_games(games_new)
         
-        print(f"{len(removed_games)=}")
+        if DEBUG: print(f"{len(removed_games)=}")
         for i, _game_id in enumerate(removed_games):
             if DEBUG and i % 5 == 0: print(i)
             SupabaseReader.delete_game(_game_id)
 
+        if DEBUG: print(f"{len(removed_objectives)=}")
+        SupabaseReader.delete_objectives_many(removed_objectives)
         
-        print(f"{len(users_new)=}")
+        if DEBUG: print(f"{len(users_new)=}")
         if DEBUG: print(f"BULK USERS")
         SupabaseReader.bulk_dump_users(users_new)
 
-        print(f"{len(removed_users)=}")
+        if DEBUG: print(f"{len(removed_users)=}")
         for i, _user_id in enumerate(removed_users):
             if DEBUG and i % 5 == 0: print(i)
             SupabaseReader.delete_user(_user_id)
 
         
-        print(f"{len(rolls_updated)=}")
-        print("BULK ROLLS")
+        if DEBUG: print(f"{len(rolls_updated)=}")
+        if DEBUG: print("BULK ROLLS")
         SupabaseReader.bulk_dump_rolls(rolls_updated)
 
     # Send updates!
@@ -256,7 +258,7 @@ async def process_loop(client: discord.Client = None):
 
 """ MEDIUM LEVEL FUNCTIONS """
 
-async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEAPIGame], list[str]]:
+async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEAPIGame], list[str], list[str]]:
     """
     Updates all games. This version began April 9, 2026 for Supabase.
     Returns
@@ -270,6 +272,7 @@ async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEA
     last_run = SupabaseReader.get_last_loop()
     if DEBUG: print(f"GAMES: {last_run=}")
     updates: list[UpdateMessageForScraperProcess] = []
+    objectives_removed: list[str] = []
 
     # Step 1: Go through /api/games and /api/objectives and find the list of all games that have been updated.
     # 1a) get the ids of all games that have been updated from /api/games
@@ -328,9 +331,11 @@ async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEA
         for i, game_new in enumerate(games):
             if DEBUG and i % 10 == 0: print(f"GAME UPDATES: {i}")
             game_old = SupabaseReader.get_game(game_new.ce_id)
-            _update = update_one_game(game_old, game_new)
+            _update, _or = update_one_game(game_old, game_new)
             if _update is not None:
                 updates.append(_update)
+            if _or is not None:
+                objectives_removed.extend(_or)
         if DEBUG: print("GAME UPDATES: done")
 
     # Step 3: Find all removed games.
@@ -346,7 +351,7 @@ async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEA
             if _update is not None:
                 updates.append(_update)
     
-    return updates, games, game_list_removed
+    return updates, games, game_list_removed, objectives_removed
 
 async def update_users(games_old: list[CEGame], games_new: list[CEAPIGame]):
     """
@@ -572,14 +577,14 @@ def generate_database_tier(database_name: list[CEAPIGame]):
 
 
 """ BOTTOM LEVEL FUNCTIONS """
-def update_one_game(game_old: CEGame, game_new: CEAPIGame) -> UpdateMessageForScraperProcess:
+def update_one_game(game_old: CEGame, game_new: CEAPIGame) -> tuple[UpdateMessageForScraperProcess, list[str]]:
     # NEW GAME
     if game_old is None:
-        return create_update_new_game(game_new)
+        return create_update_new_game(game_new), []
     
     # REMOVED GAME
     elif game_new is None:
-        return create_update_removed_game(game_old)
+        return create_update_removed_game(game_old), []
     
     return create_update_updated_game(game_old, game_new)
 
@@ -906,7 +911,7 @@ def create_update_removed_game(game_old: CEGame) -> UpdateMessageForScraperProce
 
     return update
 
-def create_update_updated_game(game_old: CEGame, game_new: CEAPIGame) -> UpdateMessageForScraperProcess:
+def create_update_updated_game(game_old: CEGame, game_new: CEAPIGame) -> tuple[UpdateMessageForScraperProcess, list[str]]:
     """Creates the `UpdateMessageForScraperProcess` for an updated game."""
     update = UpdateMessageForScraperProcess()
     update.is_embed = True
@@ -1015,9 +1020,9 @@ def create_update_updated_game(game_old: CEGame, game_new: CEAPIGame) -> UpdateM
     description_test = description_test.replace('\n','').replace('\t','').replace('- Total points unchanged!','')
 
     # if there wasn't any real change, ignore this embed
-    if description_test == "" : return None
+    if description_test == "" : return None, None
 
-    return update
+    return update, old_objective_ce_ids
 
 def check_roles(games_old: list[CEUserGame], games_new: list[CEUserGame],
                          database_name: list[CEGame], user: CEUser) -> list[UpdateMessageForScraperProcess]:
