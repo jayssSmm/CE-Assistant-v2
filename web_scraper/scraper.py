@@ -325,6 +325,8 @@ async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEA
         games.append(await CEAPIReader.get_game(gameId))
     if DEBUG: print("PULL GAMES: done")
 
+    while None in games: games.remove(None)
+
     # Step 2: Generate updates for those by comparing with Supabase games.
     if not SKIPUPDATES:
         if DEBUG: print("GAME UPDATES: begin")

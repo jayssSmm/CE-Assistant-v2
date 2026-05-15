@@ -112,7 +112,7 @@ def _ce_to_game(json_response : dict) -> CEAPIGame :
     return ce_game
 
 
-async def get_game(ce_id: str) -> CEAPIGame:
+async def get_game(ce_id: str) -> CEAPIGame | None:
     session = await http_session.get_session()
 
     async with session.get(f'https://cedb.me/api/game/{ce_id}') as response:
