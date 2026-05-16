@@ -349,9 +349,11 @@ async def update_games() -> tuple[list[UpdateMessageForScraperProcess], list[CEA
     # Step 4: Generate updates for those removed games.
     if not SKIPUPDATES:
         for game_removed in game_list_removed:
-            _update = update_one_game(SupabaseReader.get_game(game_removed), None)
+            _update, _or = update_one_game(SupabaseReader.get_game(game_removed), None)
             if _update is not None:
                 updates.append(_update)
+            if _or is not None:
+                objectives_removed.extend(_or)
     
     return updates, games, game_list_removed, objectives_removed
 
