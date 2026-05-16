@@ -342,6 +342,11 @@ async def master_loop(client : discord.Client, guild_id : int) :
     casino_channel = client.get_channel(hm.CASINO_ID)
     private_log_channel = client.get_channel(hm.PRIVATE_LOG_ID)
     game_additions_channel = client.get_channel(hm.GAME_ADDITIONS_ID)
+
+    # ---- send begin message ----
+    await private_log_channel.send(
+        f":arrows_counterclockwise: loop started at <t:{hm.get_unix('now')}>."
+    )
     
     # ---- game ----
     SKIP_GAME_SCRAPE = False
