@@ -6,9 +6,12 @@ from discord import app_commands
 from Classes.CE_Roll import CERoll
 from Modules.WebInteractor import master_loop
 from commands.user import register
-from Modules import CEAPIReader, Mongo_Reader, Reformatter, hm
+from Modules import CEAPIReader, Reformatter, hm, SupabaseReader
 import requests
 import json
+
+from web_scraper.scraper import process_loop
+from Modules import http_session
 
 
 def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.Guild) :
@@ -69,6 +72,11 @@ def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.G
     @tree.command(name='force-unlink', description="Unlink someone from the bot.", guild=guild)
     async def force_unlink_command(interaction: discord.Interaction, member: discord.Member):
         await force_unlink(interaction, member)
+
+        @tree.command(name='shutdown', description='Shut the bot down.', guild=guild)
+        @app_commands.default_permissions(administrator=True)
+        async def shutdown_command(interaction: discord.Interaction):
+            await shutdown(interaction)
     pass
 
 
@@ -85,17 +93,6 @@ def setup(cli : discord.Client, tree : app_commands.CommandTree, gui : discord.G
 
 async def test(interaction : discord.Interaction) :
     await interaction.response.defer()
-
-    _client = Mongo_Reader._mongo_client
-    db = _client['ce_v4']
-
-    await db.command({
-        "collMod": "games",
-        "validator": {"$jsonSchema": Reformatter.create_games()},
-        "validationLevel": "moderate",
-        "validationAction": "error"
-    })
-    print('schema applied to "games"')
 
     return await interaction.followup.send('testsss done')
 
@@ -120,15 +117,15 @@ async def scrape(interaction : discord.Interaction) :
     await private_log_channel.send(f":white_large_square: dev command run by <@{interaction.user.id}>: /scrape",
                              allowed_mentions=discord.AllowedMentions.none())
 
-    user_list = await Mongo_Reader.get_list("user")
+    user_list = SupabaseReader.get_list("user")
     database_user = await CEAPIReader.get_api_users_all(user_list)
     database_name = await CEAPIReader.get_api_games_full()
 
     for user in database_user :
-        await Mongo_Reader.dump_user(user)
+        SupabaseReader.dump_user(user)
 
     for game in database_name :
-        await Mongo_Reader.dump_game(game)
+        SupabaseReader.dump_game(game)
 
     return await interaction.followup.send("Database replaced.")
 
@@ -162,9 +159,27 @@ async def loop(interaction : discord.Interaction) :
     await private_log_channel.send(f":white_large_square: dev command run by <@{interaction.user.id}>: /initiate-loop",
                              allowed_mentions=discord.AllowedMentions.none())
 
-    await master_loop(client, guild.id)
+    await process_loop(client)
 
     return await interaction.followup.send('loop complete.')
+
+async def shutdown(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    private_log_channel = client.get_channel(hm.PRIVATE_LOG_ID)
+    if private_log_channel is not None:
+        await private_log_channel.send(
+            f":white_large_square: dev command run by <@{interaction.user.id}>: /shutdown",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    await interaction.followup.send('Shutting down the bot...', ephemeral=True)
+
+    if process_loop.is_running():
+        process_loop.stop()
+
+    await http_session.close_session()
+    await client.close()
 
 
 #             _____    _____      _   _    ____    _______   ______    _____ 
@@ -247,13 +262,13 @@ async def clear_roll(interaction : discord.Interaction, member : discord.Member,
                      + f"pending={pending}", allowed_mentions=discord.AllowedMentions.none())
 
     # get database user and the user
-    user = await Mongo_Reader.get_user(member.id, use_discord_id=True)
+    user = SupabaseReader.get_user(member.id, use_discord_id=True)
 
     if current : user.remove_current_roll(roll_name)
     if completed : user.remove_completed_rolls(roll_name)
     if pending : user.remove_pending(roll_name)
 
-    await Mongo_Reader.dump_user(user)
+    SupabaseReader.dump_user(user)
     return await interaction.followup.send("Done!")
 
 
@@ -265,13 +280,13 @@ async def clear_roll_portion(interaction: discord.Interaction, member: discord.M
     await private_log_channel.send(f":white_large_square: dev command run by <@{interaction.user.id}>: /clear-roll_recent, "
                      + f"params: member=<@{member.id}>, roll_name={roll_name}")
     
-    user = await Mongo_Reader.get_user(member.id, use_discord_id=True)
+    user = SupabaseReader.get_user(member.id, use_discord_id=True)
 
     roll = user.get_current_roll(roll_name)
     if roll is None:
         return await interaction.followup.send("User does not have roll that is current")
     game_removed = roll.remove_game_last()
-    game_removed = await Mongo_Reader.get_game(game_removed)
+    game_removed = SupabaseReader.get_game(game_removed)
     if game_removed is None :
         game_removed = "<error, removed game was 'null'>"
     else :
@@ -284,7 +299,7 @@ async def clear_roll_portion(interaction: discord.Interaction, member: discord.M
     for roll in user.rolls:
         print (roll.to_dict())
 
-    await Mongo_Reader.dump_user(user)
+    SupabaseReader.dump_user(user)
     return await interaction.followup.send(f"Removed {game_removed} from {user.display_name}'s {roll_name} roll. " +
                                            f"Status set to 'waiting'.")
 
@@ -304,7 +319,7 @@ async def force_add(interaction : discord.Interaction, member : discord.Member, 
                      allowed_mentions=discord.AllowedMentions.none())
     
     # get database user and the user
-    user = await Mongo_Reader.get_user(member.id, use_discord_id=True)
+    user = SupabaseReader.get_user(member.id, use_discord_id=True)
 
     user.add_completed_roll(CERoll(
         roll_name=roll_name,
@@ -312,7 +327,7 @@ async def force_add(interaction : discord.Interaction, member : discord.Member, 
         games=None
     ))
 
-    await Mongo_Reader.dump_user(user)
+    SupabaseReader.dump_user(user)
     return await interaction.followup.send("Done!")
 
 
@@ -324,9 +339,9 @@ class UnlinkView(discord.ui.View):
     
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.green)
     async def yes_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = await Mongo_Reader.get_user(self._member_id, use_discord_id=True)
+        user = SupabaseReader.get_user(self._member_id, use_discord_id=True)
         user._discord_id = None
-        await Mongo_Reader.dump_user(user)
+        SupabaseReader.dump_user(user)
 
         self.clear_items()
         await interaction.response.edit_message(content=f"{user.display_name} has been removed.", view=self)

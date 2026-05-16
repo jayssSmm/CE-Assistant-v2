@@ -7,6 +7,7 @@ from Classes.CE_Game import CEGame
 from Classes.CE_User_Game import CEUserGame
 import Modules.hm as hm
 from Classes.OtherClasses import CRData
+from Modules import http_session
 
 MUTELIST_CEIDS = [
     "e790e8f0-f67e-4646-8fa9-de436b2c8d5e" # athenavenny
@@ -21,7 +22,7 @@ class CEUser:
                  rolls : list[CERoll],
                  display_name : str,
                  avatar : str,
-                 last_updated : int,
+                 last_updated : datetime.datetime,
                  steam_id : str = "a"):
         self._discord_id : int = discord_id
         self._ce_id : str = ce_id
@@ -149,14 +150,14 @@ class CEUser:
             raise ValueError("Argument 'database_name' contains None.")
         
         completed_games : list[CEGame] = []
-        for game in database_name:
-            for user_game in self.owned_games:
+        for game_data in database_name:
+            for game_user in self.owned_games:
                 if (
-                    game.ce_id == user_game.ce_id 
-                    and game.get_total_points() > 0 
-                    and game.get_total_points() == user_game.get_user_points()
+                    game_data.ce_id == game_user.ce_id 
+                    and game_data.get_total_points() > 0 
+                    and game_data.get_total_points() == game_user.get_user_points()
                     ):
-                    completed_games.append(game)
+                    completed_games.append(game_data)
         return completed_games
     
     def get_objective(self, objective_id : str) :
@@ -234,7 +235,7 @@ class CEUser:
         for i, roll in enumerate(self.rolls) :
             if roll.roll_name == roll_name and roll.status == "current" :
                 self._rolls[i].status = "won"
-                self._rolls[i].completed_time = hm.get_unix("now")
+                self._rolls[i].completed_time = hm.get_datetime('now')
                 return
         
         raise ValueError(f"User {self.ce_id} has no current roll {roll_name}.")
@@ -337,8 +338,8 @@ class CEUser:
             user_ce_id=self.ce_id,
             games=[""],
             status="pending",
-            init_time=hm.get_unix("now"),
-            due_time=hm.get_unix(minutes=10)
+            init_time=hm.get_datetime('now'),
+            due_time=hm.get_datetime(minutes=10)
         ))
         pass
     
@@ -408,10 +409,10 @@ class CEUser:
         """Returns true if this user is currently on cooldown for `roll_name`."""
         # check infinite time rolls
         cooldown_time = self.get_cooldown_time(roll_name, database_name)
-        return cooldown_time is not None and cooldown_time > hm.get_unix("now")
+        return cooldown_time is not None and cooldown_time > hm.get_datetime('now')
     
     def get_cooldown_time(self, roll_name : hm.ALL_ROLL_EVENT_NAMES, database_name : list[CEGame]) -> int | None :
-        """Returns the unix timestamp of the date `roll_name`'s cooldown ends
+        """Returns the datetime of the date `roll_name`'s cooldown ends
         (or `None` if not applicable.)"""
         # check infinite time rolls
         for roll in self.current_rolls :
@@ -422,7 +423,7 @@ class CEUser:
         for roll in self.failed_rolls :
             if roll.roll_name == roll_name : 
                 cooldown_date = roll.calculate_cooldown_date(database_name)
-                if cooldown_date is not None and cooldown_date > hm.get_unix("now") : return cooldown_date
+                if cooldown_date is not None and cooldown_date > hm.get_datetime('now') : return cooldown_date
         return None
     
     def had_cooldown(self, roll_name : hm.ALL_ROLL_EVENT_NAMES, database_name : list[CEGame], old_time : int) -> bool :
@@ -500,24 +501,26 @@ class CEUser:
     
     async def get_api_user(self) -> 'CEAPIUser' :
         "Returns the CEAPIUser."
-        async with aiohttp.ClientSession(headers={'User-Agent':"andy's-super-duper-bot/0.1"}) as session :
-            async with session.get(f'https://cedb.me/api/user/{self.ce_id}/') as response :
-                try :
-                    data = await response.json()
-                except :
-                    return None
+        session = await http_session.get_session()
+        async with session.get(f'https://cedb.me/api/user/{self.ce_id}/') as response :
+            if response.status != 200 :
+                return None
+            try :
+                data = await response.json()
+            except aiohttp.ContentTypeError :
+                return None
 
 
-                return CEAPIUser(
-                    discord_id=self.discord_id,
-                    ce_id=self.ce_id,
-                    owned_games=self.owned_games,
-                    rolls=self.rolls,
-                    full_data=data,
-                    display_name=self.display_name,
-                    avatar=self.avatar,
-                    last_updated=self.last_updated
-                )
+            return CEAPIUser(
+                discord_id=self.discord_id,
+                ce_id=self.ce_id,
+                owned_games=self.owned_games,
+                rolls=self.rolls,
+                full_data=data,
+                display_name=self.display_name,
+                avatar=self.avatar,
+                last_updated=self.last_updated
+            )
         
     def completions(self, database_name : list[CEGame]) -> int :
         "Returns the number of completions this user has."
@@ -528,6 +531,24 @@ class CEUser:
         return completions
 
     
+    def to_dict_supabase(self) -> dict:
+        return {
+            "ce_id": self.ce_id,
+            "discord_id": self.discord_id,
+            "display_name": self.display_name,
+            "image_avatar": self.avatar,
+            "updated_at_CE": self.last_updated,
+            "created_at_CE": None,
+            "steam_id": self._steam_id
+        }
+    
+    def to_dict_supabase_games(self) -> list[dict]:
+        return [g.to_dict_supabase(self.ce_id) for g in self.owned_games]
+    
+    def to_dict_supabase_objectives(self) -> list[dict]:
+        _objectives = []
+        for game in self.owned_games:
+            _objectives.extend(game.to_dict_supabase_objectives(self.ce_id))
 
     def to_dict(self) -> dict :
         """Returns this user as a dictionary as used in the MongoDB database."""
@@ -638,7 +659,7 @@ class CEAPIUser(CEUser) :
         game_names : list[str] = []
         for objective in self.full_data['userObjectives'] :
             ce_ids.append(objective['objective']['id'])
-            completion_dates.append(CEAPIReader._timestamp_to_unix(objective['updatedAt']))
+            completion_dates.append(hm.cetimestamp_to_datetime(objective['updatedAt']))
             game_names.append(objective['objective']['game']['name'])
         
         # make sure they didn't request too much
