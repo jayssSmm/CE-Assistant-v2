@@ -20,7 +20,7 @@ class CEUserGame():
     def get_user_points(self) :
         """Returns the total number of points this user has in this game."""
         total_points = 0
-        for objective in self.get_user_primary_objectives() :
+        for objective in self.user_objectives :
             total_points += objective.user_points
         return total_points
     
@@ -90,6 +90,16 @@ class CEUserGame():
             if game.ce_id == self.ce_id :
                 return game.category
         return None
+    
+    def to_dict_supabase(self, user_ce_id: str):
+        return {
+            "user_ce_id": user_ce_id,
+            "game_ce_id": self.ce_id,
+            "updated_at_CE": None
+        }
+    
+    def to_dict_supabase_objectives(self, user_ce_id: str):
+        return [o.to_dict_supabase() for o in self.user_objectives]
     
     def to_dict(self) :
         """Returns this game as a dictionary as used in the MongoDB database.

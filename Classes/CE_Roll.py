@@ -1,3 +1,4 @@
+import datetime
 from typing import Literal, get_args
 
 import Modules.hm as hm
@@ -90,16 +91,16 @@ class CERoll:
         The Challenge Enthusiast ID of the
         partner for a co-op roll.
 
-    init_time : `int`
-        The unix timestamp of the time this
+    init_time : `datetime.datetime`
+        The datetime of the time this
         roll was initiated.
 
-    due_time : `int` or `None`
-        The unix timestamp of the time this
+    due_time : `datetime.datetime` or `None`
+        The datetime of the time this
         roll is due.
 
-    completed_time : `int` or `None`
-        The unix timestamp of the time this
+    completed_time : `datetime.datetime` or `None`
+        The datetime of the time this
         roll was completed.
 
     rerolls : `int` or `None`
@@ -120,39 +121,41 @@ class CERoll:
                  games : list[str],
                  status : ROLL_STATUS = None,
                  partner_ce_id : str = None,
-                 init_time : int = None,
-                 due_time = None,
-                 completed_time = None,
+                 init_time : datetime.datetime = None,
+                 due_time: datetime.datetime = None,
+                 completed_time: datetime.datetime = None,
                  rerolls = None,
                  is_current : bool = False,
-                 tier_num : int = None):
+                 tier_num : int = None,
+                 _id: str = None):
         self._roll_name : str = roll_name
         self._user_ce_id : str = user_ce_id
         self._games : list[str] = games
         self._status = status
         self._partner_ce_id : str = partner_ce_id
+        self._id = _id
 
         # if the roll isn't being created right now
-        # (and therefore is probably being read from MongoDB)
-        # don't reset all the variables
+        # (and therefore is probably being read from Supabase)
+        # normalize any string timestamps and don't reset variables
         if not is_current : 
-            self._init_time = init_time
-            self._due_time = due_time
-            self._completed_time = completed_time
+            self._init_time = self._normalize_datetime(init_time) if init_time is not None else None
+            self._due_time = self._normalize_datetime(due_time) if due_time is not None else None
+            self._completed_time = self._normalize_datetime(completed_time) if completed_time is not None else None
             self._rerolls = rerolls
             return
 
         # if the roll is being created right now...
         # set init_time to right now
         if init_time == None :
-            self._init_time = hm.get_unix('now')
+            self._init_time = hm.get_datetime('now')
         else :
             self._init_time = init_time
 
         # set the due time to the correct time
         if due_time == None and roll_due_times[self._roll_name] is not None:
-            if roll_name == "Soul Mates" : self._due_time = hm.get_unix(days=roll_due_times['Soul Mates'][f"Tier {tier_num}"])
-            else : self._due_time = hm.get_unix(days=roll_due_times[self._roll_name])
+            if roll_name == "Soul Mates" : self._due_time = hm.get_datetime(days=roll_due_times['Soul Mates'][f"Tier {tier_num}"])
+            else : self._due_time = hm.get_datetime(days=roll_due_times[self._roll_name])
         elif due_time == None and roll_due_times[self._roll_name] is None :
             self._due_time = None
         else :
@@ -172,6 +175,24 @@ class CERoll:
         else :
             self._rerolls = rerolls
 
+    # ------- helper methods -------
+    
+    def _normalize_datetime(self, dt):
+        """Convert string or naive datetime to timezone-aware datetime."""
+        if dt is None:
+            return None
+        if isinstance(dt, str):
+            try:
+                dt = datetime.datetime.fromisoformat(dt)
+            except Exception:
+                try:
+                    dt = hm.cetimestamp_to_datetime(dt)
+                except Exception:
+                    return None
+        if isinstance(dt, datetime.datetime) and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
+
     # ------- properties -------
 
     @property
@@ -186,17 +207,17 @@ class CERoll:
     
     @property
     def init_time(self):
-        """Get the unix timestamp of the time the roll was, well, rolled."""
+        """Get the datetime of the time the roll was, well, rolled."""
         return self._init_time
     
     @property
     def due_time(self):
-        """Get the unix timestamp of the time the roll will end."""
+        """Get the datetime of the time the roll will end."""
         return self._due_time
     
     @property
     def completed_time(self):
-        """Get the unix timestamp of the time the roll was completed 
+        """Get the datetime of the time the roll was completed 
         (will be `None` if active)."""
         return self._completed_time
     
@@ -220,6 +241,16 @@ class CERoll:
     def status(self) -> ROLL_STATUS :
         "The status of this roll."
         return self._status
+    
+    def status2(self):
+        if self.init_time == 0 and self.due_time is None or self.games is None: return "won_legacy"
+        match(self.status):
+            case "current": return "current"
+            case "failed": return "failed"
+            case "pending": return "pending"
+            case "removed": return "removed"
+            case "waiting": return "between_stages"
+            case "won": return "won"
 
     def set_status(self, new_status : ROLL_STATUS) :
         "Setter for status"
@@ -250,25 +281,27 @@ class CERoll:
     def increase_due_time(self, increase_in_seconds : int) -> None :
         """Moves the due date of this roll event up 
         by `increase_in_seconds` seconds."""
-        self._due_time += increase_in_seconds
+        dt = self._normalize_datetime(self._due_time)
+        if dt is not None:
+            self._due_time = dt + datetime.timedelta(seconds=increase_in_seconds)
 
     @due_time.setter
     def due_time(self, days : int) -> None :
         """Sets the due time for `days` days from now."""
         if days == None : self._due_time = None
-        else: self._due_time = hm.get_unix(days=days)
+        else: self._due_time = hm.get_datetime(days=days)
     
     def reset_due_time(self) :
         "Resets the due time."
         # if fourward thinking, assume the new game has been added already.
         if self.roll_name == "Fourward Thinking" : 
-            self._due_time = hm.get_unix(days=7*len(self.games))
+            self._due_time = hm.get_datetime(days=7*len(self.games))
         # if two week t2 streak, assume the new game has been added already.
         elif self.roll_name == "Two Week T2 Streak" or self.roll_name == "Two \"Two Week T2 Streak\" Streak" :
-            self._due_time = hm.get_unix(days=7)
+            self._due_time = hm.get_datetime(days=7)
         # if its not, give it the default
         else :
-            self._due_time = hm.get_unix(days=roll_due_times[self._roll_name])
+            self._due_time = hm.get_datetime(days=roll_due_times[self._roll_name])
 
     def add_game(self, game : str) -> None :
         """Adds the Challenge Enthusiast ID given by `game`
@@ -285,11 +318,11 @@ class CERoll:
         if self.roll_name not in hm.MULTI_STAGE_ROLLS : return
 
         if self.roll_name == "Two Week T2 Streak" :
-            self.due_time = hm.get_unix(days=7)
+            self.due_time = hm.get_datetime(days=7)
         elif self.roll_name == "Two \"Two Week T2 Streak\" Streak" :
-            self.due_time = hm.get_unix(days=7)
+            self.due_time = hm.get_datetime(days=7)
         elif self.roll_name == "Fourward Thinking" :
-            self.due_time = hm.get_unix(
+            self.due_time = hm.get_datetime(
                 days=len(self.games)*7
             )
 
@@ -317,8 +350,26 @@ class CERoll:
     
     def is_expired(self) -> bool :
         """Returns true if the roll has expired."""
-        if self.due_time == None : return False
-        return self.due_time < hm.get_unix('now')
+        if self.due_time is None :
+            return False
+
+        dt = self.due_time
+        # normalize string timestamps to datetime
+        if isinstance(dt, str):
+            try:
+                dt = datetime.datetime.fromisoformat(dt)
+            except Exception:
+                try:
+                    dt = hm.cetimestamp_to_datetime(dt)
+                except Exception:
+                    print(f'FAILED EXPIRATION CHECK: {self.due_time=}')
+                    return False
+
+        # ensure timezone-aware for comparison
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+
+        return dt < hm.get_datetime('now')
 
     def is_completed(self) -> bool :
         "Return true if this roll has been completed."
@@ -550,19 +601,19 @@ class CERoll:
             if self.rerolls is None : self._rerolls = 0
             rerolls_used = len(self.games) - (self.rerolls + 1)
             days = len(self.games)*14 + hm.months_to_days(rerolls_used)
-            return hm.get_unix(days=days, old_unix=self.init_time)
+            return hm.get_datetime(days=days, old_datetime=self.init_time)
         
         elif self.roll_name == "Soul Mates" :
             game = hm.get_item_from_list(self.games[0], database_name)
             match(game.get_tier_num()) :
-                case 1 : return hm.get_unix(10*7, old_unix=self.init_time)
-                case 2 : return hm.get_unix(8*7, old_unix=self.init_time)
-                case 3 : return hm.get_unix(6*7, old_unix=self.init_time)
-                case 4 : return hm.get_unix(4*7, old_unix=self.init_time)
-                case _ : return hm.get_unix(2*7, old_unix=self.init_time)
+                case 1 : return hm.get_datetime(10*7, old_datetime=self.init_time)
+                case 2 : return hm.get_datetime(8*7, old_datetime=self.init_time)
+                case 3 : return hm.get_datetime(6*7, old_datetime=self.init_time)
+                case 4 : return hm.get_datetime(4*7, old_datetime=self.init_time)
+                case _ : return hm.get_datetime(2*7, old_datetime=self.init_time)
         
         if roll_cooldowns[self.roll_name] is None : return None
-        return hm.get_unix(days=roll_cooldowns[self.roll_name], old_unix=self.init_time)
+        return hm.get_datetime(days=roll_cooldowns[self.roll_name], old_datetime=self.init_time)
 
     def is_won(self, database_name : list, user, partner = None) -> bool :
         """Returns true if this roll instance has been won."""

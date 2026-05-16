@@ -7,7 +7,11 @@ Version 1: Not object oriented.
 Version 2: Object oriented, but used only one document in MongoDB.
 Version 3: Each user and game gets their own document in MongoDB.
 """
+import asyncio
 import json
+import os
+import uuid
+from typing import Any
 from Classes.CE_Game import CEGame
 from Classes.CE_Objective import CEObjective
 from Classes.CE_User import CEUser
@@ -17,6 +21,14 @@ from Classes.CE_Cooldown import CECooldown
 from Classes.CE_Roll import CERoll
 
 from motor.motor_asyncio import AsyncIOMotorClient
+
+"""""""""""""""""""""""""""""""""""""""""""""""
+
+---- MUAHAHAHA LETS MOVE TO SUPABASE ----
+
+"""""""""""""""""""""""""""""""""""""""""""""""
+
+
 
 """""""""""""""""""""""""""""""""""""""""""""""
 
@@ -284,9 +296,9 @@ with open('secret_info.json') as f :
 # ---------- inputs ----------
 async def reformat_database_input_v2_to_v3() :
     "Takes in database input version 2 and turns it into version 3."
-    from Modules import Mongo_Reader
+    from Modules import SupabaseReader
 
-    database_input = await Mongo_Reader.get_inputs_v2()
+    database_input = SupabaseReader.get_inputs_v2()
     V3DATABASENAME = "database-input-v3"
 
     _mongo_client = AsyncIOMotorClient(_uri)
@@ -303,9 +315,9 @@ async def reformat_database_input_v2_to_v3() :
 # ---------- games ----------
 async def reformat_database_name_v2_to_v3() :
     "Takes in database name version 2 and turns it into version 3."
-    from Modules import Mongo_Reader
+    from Modules import SupabaseReader
 
-    database_name = await Mongo_Reader.get_mongo_games_v2()
+    database_name = SupabaseReader.get_mongo_games_v2()
     V3DATABASENAME = "database-name-v3"
 
     _mongo_client = AsyncIOMotorClient(_uri)
@@ -352,9 +364,9 @@ def objective_v2_to_dict_v3(obj : CEObjective) :
 
 async def reformat_database_user_v2_to_v3() :
     "Takes in database user version 2 and turns it to version 3."
-    from Modules import Mongo_Reader
+    from Modules import SupabaseReader
 
-    database_user = await Mongo_Reader.get_mongo_users_v2()
+    database_user = SupabaseReader.get_mongo_users_v2()
     V3DATABASENAME = "database-user-v3"
 
     _mongo_client = AsyncIOMotorClient(_uri)
@@ -515,7 +527,7 @@ def reformat_game(dict) -> CEGame :
 async def reformat_database_name() :
     import bson
     from motor.motor_asyncio import AsyncIOMotorClient
-    import Modules.Mongo_Reader as Mongo_Reader
+    import Modules.SupabaseReader as SupabaseReader
 
     client = AsyncIOMotorClient("mongodb+srv://andrewgarcha:KUTo7dCtGRy4Nrhd@ce-cluster.inrqkb3.mongodb.net/?retryWrites=true&w=majority")
     collection = client['database_name']['ce-collection']
@@ -527,13 +539,13 @@ async def reformat_database_name() :
     for game in database_name :
         game_objects.append(reformat_game(database_name[game]))
 
-    return await Mongo_Reader.dump_games(game_objects)
+    return SupabaseReader.dump_games(game_objects)
 
 
 async def reformat_database_user() :
-    import Modules.Mongo_Reader as Mongo_Reader
+    import Modules.SupabaseReader as SupabaseReader
     import bson
-    client = Mongo_Reader._mongo_client
+    client = SupabaseReader._mongo_client
     collection = client['database_name']['ce-collection']
 
     database_user = await collection.find_one({'_id' : bson.ObjectId('64f8bd1b094bdbfc3f7d0051')})
@@ -543,7 +555,7 @@ async def reformat_database_user() :
     for user in database_user :
         user_objects.append(reformat_user(database_user[user]))
     
-    return await Mongo_Reader.dump_users(user_objects)
+    return SupabaseReader.dump_users(user_objects)
 
 def reformat_user(user : dict) -> CEUser :
     """Reformats the user that follows the old structure.\n
