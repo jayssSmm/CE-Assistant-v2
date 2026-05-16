@@ -100,7 +100,7 @@ async def register(interaction : discord.Interaction, ce_id : str, discord_user 
         ce_user.add_completed_roll(roll)
 
     # add the user to users and dump it
-    SupabaseReader.dump_user(ce_user)
+    SupabaseReader.bulk_dump_users([ce_user])
 
     # get the role and attach it
     cea_registered_role = discord.utils.get(interaction.guild.roles, name = "CEA Registered")
