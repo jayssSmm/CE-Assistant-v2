@@ -121,7 +121,7 @@ async def process_loop(client: discord.Client = None):
         print("HEY NO CLIENT WAS GIVEN TO PROCESS_LOOP()!!")    
     print("process_loop() invoked.")
 
-    assistant_log = client.get_channel(hm.id_num("assistantlog"))
+    assistant_log = client.get_channel(hm.id_num("privatelog"))
 
     if assistant_log is not None:
         await assistant_log.send(
