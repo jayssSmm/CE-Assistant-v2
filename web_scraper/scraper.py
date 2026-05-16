@@ -233,7 +233,9 @@ async def process_loop(client: discord.Client = None):
         embed.color = update.color
         embed.title = update.title
         embed.description = update.description
-        embed.set_image(url=update.image)
+        # TODO removal image
+        if update.image is not None and update.image != "":
+            embed.set_image(url=update.image)
         embed.url = update.url
 
         # regular stuff
@@ -924,7 +926,7 @@ def create_update_updated_game(game_old: CEGame, game_new: CEAPIGame) -> tuple[U
     update.description = ""
     update.url = f"https://cedb.me/game/{game_new.ce_id}"
     update.location = 'gameadditions'
-    update.image = game_new.header
+    update.image = ""
 
     # POINT/TIER CHANGE
     if game_old.get_total_points() == game_new.get_total_points():
